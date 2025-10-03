@@ -1,0 +1,8 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Name=Run WatchPupPy
+Exec=gnome-terminal -- bash -c "./run_watchpuppy.sh"
+Path=/home/fajtai/Git/WatchPupPy/scripts # modify to match your app path
+Terminal=true
+Type=Application
+Icon=/home/fajtai/Git/WatchPupPy/assets/icon.png # modify to match your icon path
