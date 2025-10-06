@@ -1,4 +1,5 @@
 import sys
+from typing import Optional
 import threading
 from datetime import datetime
 
@@ -12,20 +13,35 @@ from src.gui.watcher_config_gui import WatcherConfigGUI
 from src.gui.pattern_manager_gui import PatternManagerGUI
 from src.watchpuppy.watcher import FolderWatcher, BackupManager
 from src.watchpuppy.utils import log_timestamp
+from src.watchpuppy.logger import *
 
 class MainGUI(QWidget):
     watcherStopped = Signal()
-    newLogMessage = Signal(str)
+    # newLogMessage = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
+        
+        # control
+        self.watcher: FolderWatcher = None
+        self.watcher_thread: threading.Thread = None
+        self.watcher_running = False
 
+        self.state = "stopped"  # stopped, starting, running, stopping
+        
+        # logging
+        
+        self.qt_logger = QtLogger()
+        self.qt_logger.newLogMessage.connect(self._append_log_slot)
+
+        # GUI def
         self.setWindowTitle("WatchPupPy")
 
         self.config_gui = WatcherConfigGUI()
 
         self.start_btn = QPushButton("Start Watching")
         self.stop_btn = QPushButton("Stop Watching")
+        self.merge_final_btn = QPushButton("Merge to FINAL")
         self.stop_btn.setEnabled(False)
 
         self.status_lbl = QLabel("Status: Stopped")
@@ -39,27 +55,27 @@ class MainGUI(QWidget):
         btn_layout.addWidget(self.stop_btn)
         btn_layout.addWidget(self.edit_patterns_btn)
 
+        
+        
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.config_gui)
         main_layout.addLayout(btn_layout)
         main_layout.addWidget(self.status_lbl)
+        main_layout.addWidget(self.merge_final_btn)
         main_layout.addWidget(QLabel("Log:"))
         main_layout.addWidget(self.log_text)
 
         self.setLayout(main_layout)
 
-        self.watcher: FolderWatcher = None
-        self.watcher_thread: threading.Thread = None
-        self.watcher_running = False
-
-        self.state = "stopped"  # stopped, starting, running, stopping
 
         self.start_btn.clicked.connect(self.start_watching)
         self.stop_btn.clicked.connect(self.stop_watching)
+        self.merge_final_btn.clicked.connect(self.merge_to_final)
+        
         self.edit_patterns_btn.clicked.connect(self.open_pattern_manager)
 
         self.watcherStopped.connect(self.on_watcher_stopped)
-        self.newLogMessage.connect(self._append_log_slot)
+        # self.newLogMessage.connect(self._append_log_slot)
 
     def set_state(self, new_state: str) -> None:
         print(f"Switching states: {self.state} -> {new_state}")
@@ -83,13 +99,15 @@ class MainGUI(QWidget):
         self.start_btn.setEnabled(enabled)
         self.stop_btn.setEnabled(not enabled)
         self.edit_patterns_btn.setEnabled(enabled)
+        self.merge_final_btn.setEnabled(enabled) 
 
     def _append_log_slot(self, message: str) -> None:
         self.log_text.append(message)
 
     def append_log(self, message: str) -> None:
-        self.newLogMessage.emit(f"{log_timestamp()}: {message}")
-        print(f"{log_timestamp()}: {message}")
+        # self.newLogMessage.emit(f"{log_timestamp()}: {message}")
+        # print(f"{log_timestamp()}: {message}")
+        self.qt_logger.info(message)
 
     def open_pattern_manager(self) -> None:
         patterns = [
@@ -106,6 +124,53 @@ class MainGUI(QWidget):
         if dialog.exec():
             new_patterns = dialog.patterns
             self.config_gui.set_patterns(new_patterns)
+            
+    
+    def get_backup_manager(self) -> Optional[BackupManager]:
+        """
+        Return existing BackupManager or create one from current config.
+        Returns None if creation fails.
+        """
+        if self.watcher and self.watcher.backup_manager:
+            return self.watcher.backup_manager
+
+        cfg = self.config_gui.get_config()
+        backup_folder = cfg.get("backup_folder")
+        max_versions = cfg.get("max_versions", 5)
+
+        if not backup_folder:
+            self.append_log("Backup folder not set, cannot create BackupManager.")
+            return None
+
+        try:
+            return BackupManager(backup_folder, max_versions)
+        except Exception as e:
+            self.append_log(f"Failed to create BackupManager: {e}")
+        return None
+    
+
+    def merge_to_final(self) -> None:
+        """
+        Merge backups into FINAL folder on demand.
+        """
+        if self.watcher_running:
+            QMessageBox.information(self, "Info", "Cannot merge while watcher is running.")
+            return
+
+        backup_mgr = self.get_backup_manager()
+        if not backup_mgr:
+            QMessageBox.warning(self, "Warning", "No backup manager available.")
+            return
+
+        self.append_log("Merging backups to FINAL folder...")
+        try:
+            backup_mgr.merge_final_on_demand()
+            self.append_log("Merge completed successfully.")
+            QMessageBox.information(self, "Success", "Merge to FINAL completed.")
+        except Exception as e:
+            self.append_log(f"Merge failed: {e}")
+            QMessageBox.critical(self, "Error", f"Merge failed:\n{e}")
+    
 
     def start_watching(self) -> None:
         if self.state != "stopped":

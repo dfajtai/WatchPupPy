@@ -1,15 +1,7 @@
 from typing import List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QSpinBox, QLabel,
-    QPushButton, QListWidget, QFileDialog, QMessageBox
-)
-
-from src.watchpuppy.config import ConfigManager
-
-from typing import List, Dict, Any
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QSpinBox, QLabel,
-    QPushButton, QListWidget, QFileDialog, QMessageBox
+    QPushButton, QListWidget, QFileDialog, QMessageBox, QCheckBox
 )
 
 from src.watchpuppy.config import ConfigManager
@@ -54,6 +46,12 @@ class WatcherConfigGUI(QWidget):
         self.watch_folder_browse_btn = QPushButton("Browse...")
         self.backup_folder_browse_btn = QPushButton("Browse...")
 
+        self.use_final_check = QCheckBox("Initialize from FINAL snapshot")
+        self.watch_new_files_check = QCheckBox("Watch new files created during runtime")
+        self.use_final_check.setChecked(True)
+        self.watch_new_files_check.setChecked(False)
+        
+        
         # Layout setup
         layout = QVBoxLayout()
 
@@ -70,6 +68,9 @@ class WatcherConfigGUI(QWidget):
         add_row("Interval (sec):", self.interval_spin)
         add_row("Max Versions:", self.max_versions_spin)
 
+        layout.addWidget(self.use_final_check)
+        layout.addWidget(self.watch_new_files_check)
+                
         layout.addWidget(QLabel("Patterns:"))
         layout.addWidget(self.pattern_list)
 
@@ -121,7 +122,9 @@ class WatcherConfigGUI(QWidget):
             backup_folder=self.backup_edit.text(),
             interval=self.interval_spin.value(),
             max_versions=self.max_versions_spin.value(),
-            patterns=[self.pattern_list.item(i).text() for i in range(self.pattern_list.count())]
+            patterns=[self.pattern_list.item(i).text() for i in range(self.pattern_list.count())],
+            use_final_as_initial = self.use_final_check.isChecked(),
+            watch_new_files = self.watch_new_files_check.isChecked()
         )
 
     def set_patterns(self, patterns: List[str]) -> None:
@@ -151,6 +154,8 @@ class WatcherConfigGUI(QWidget):
         self.interval_spin.setValue(config.get("interval", 60))
         self.max_versions_spin.setValue(config.get("max_versions", 5))
         self.set_patterns(config.get("patterns", []))
+        self.use_final_check.setChecked(config.get("use_final_as_initial", False))
+        self.watch_new_files_check.setChecked(config.get("watch_new_files", False))
 
     def save_config(self, filepath: str) -> None:
         """
