@@ -188,6 +188,8 @@ class MainGUI(QWidget):
             backup_manager=backup_mgr,
             interval_seconds=cfg["interval"],
             filename_patterns=cfg["patterns"],
+            use_final_as_initial=cfg["use_final_as_initial"],
+            watch_new_files=cfg["watch_new_files"],
             log_callback=self.append_log
         )
 

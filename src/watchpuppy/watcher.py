@@ -192,6 +192,29 @@ class BackupManager:
             print(f"Error saving final log JSON: {e}")
 
     
+    def get_backup_snapshot(self, backup_dir: str) -> dict:
+        """
+        Returns a dictionary mapping relative file paths in the given backup directory
+        to their MD5 hashes.
+
+        Args:
+            backup_dir (str): Path to the timestamped backup folder.
+
+        Returns:
+            dict: {relative_file_path (str): md5_hash (str)}
+        """
+        snapshot = {}
+        try:
+            for root, _, files in os.walk(backup_dir):
+                for fname in files:
+                    full_path = os.path.join(root, fname)
+                    rel_path = os.path.relpath(full_path, backup_dir)
+                    snapshot[rel_path] = md5_for_file(full_path)
+        except Exception as e:
+            print(f"Error getting backup snapshot from {backup_dir}: {e}")
+        return snapshot
+
+    
     def backup_file_to_final(self, filepath: str) -> None:
         """
         Backup a given file directly into the FINAL folder, without timestamp subfolder.
@@ -278,7 +301,7 @@ class BackupManager:
         except Exception as e:
             print(f"Error during final merge: {e}")
         
-        
+    
         
 class FolderWatcher:
     """
