@@ -164,7 +164,7 @@ class MainGUI(QWidget):
 
         self.append_log("Merging backups to FINAL folder...")
         try:
-            backup_mgr.merge_final_on_demand()
+            backup_mgr.merge_final_on_demand(log_callback=self.append_log)
             self.append_log("Merge completed successfully.")
             QMessageBox.information(self, "Success", "Merge to FINAL completed.")
         except Exception as e:

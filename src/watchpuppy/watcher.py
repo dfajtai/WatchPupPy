@@ -35,7 +35,7 @@ import shutil
 import datetime
 import json
 from threading import Lock
-from typing import Optional, List, Callable
+from typing import Optional, List, Callable, Tuple
 
 from .pattern_matcher import PatternMatcher
 from .utils import current_time_str, md5_for_file
@@ -192,7 +192,39 @@ class BackupManager:
             print(f"Error saving final log JSON: {e}")
 
     
-    def get_backup_snapshot(self, backup_dir: str) -> dict:
+    def get_latest_backup_dir(self, include_final: bool = False) -> Optional[str]:
+        """
+        Returns the latest backup directory path.
+        Optionally considers the FINAL folder if include_final is True.
+
+        Args:
+            include_final (bool): If True, include FINAL folder in consideration.
+
+        Returns:
+            str or None: Path of the latest backup directory or None if none exist.
+        """
+        try:
+            base_folder = self.backup_folder
+            backup_dirs = []
+
+            dirs = [d for d in os.listdir(base_folder) if os.path.isdir(os.path.join(base_folder, d))]
+            for d in dirs:
+                if d == "FINAL" and not include_final:
+                    continue
+                dir_path = os.path.join(base_folder, d)
+                mod_time = os.path.getmtime(dir_path)
+                backup_dirs.append((dir_path, mod_time))
+
+            if not backup_dirs:
+                return None
+
+            backup_dirs.sort(key=lambda x: x[1])
+            return backup_dirs[-1][0]
+
+        except Exception:
+            return None
+    
+    def get_backup_snapshot(self, backup_dir: str) -> Tuple[dict,bool]:
         """
         Returns a dictionary mapping relative file paths in the given backup directory
         to their MD5 hashes.
@@ -204,16 +236,49 @@ class BackupManager:
             dict: {relative_file_path (str): md5_hash (str)}
         """
         snapshot = {}
+        success = False
+        
         try:
             for root, _, files in os.walk(backup_dir):
                 for fname in files:
                     full_path = os.path.join(root, fname)
                     rel_path = os.path.relpath(full_path, backup_dir)
                     snapshot[rel_path] = md5_for_file(full_path)
+            success = True
+            
         except Exception as e:
             print(f"Error getting backup snapshot from {backup_dir}: {e}")
-        return snapshot
+        return snapshot, success 
 
+    
+    def get_final_snapshot(self) -> Tuple[dict,bool]:
+        """
+        Returns a snapshot of the FINAL folder.
+
+        This method recursively walks through the FINAL folder and returns a dictionary
+        mapping relative file paths to their MD5 hashes. It represents the current state
+        of the FINAL backup snapshot.
+
+        Returns:
+            dict: Mapping of relative file paths (str) to MD5 hashes (str).
+                Returns an empty dict if FINAL folder does not exist or on error.
+        """
+        snapshot = {}
+        success = False
+        try:
+            if not os.path.exists(self.final_folder):
+                return snapshot
+
+            for root, _, files in os.walk(self.final_folder):
+                for fname in files:
+                    full_path = os.path.join(root, fname)
+                    rel_path = os.path.relpath(full_path, self.final_folder)
+                    snapshot[rel_path] = md5_for_file(full_path)
+            success = True
+            
+        except Exception as e:
+            print(f"Error getting FINAL snapshot: {e}")
+        return snapshot, success
     
     def backup_file_to_final(self, filepath: str) -> None:
         """
@@ -250,16 +315,25 @@ class BackupManager:
                 print(f"Backup to FINAL failed for {filepath}: {e}")
     
     
-    def merge_final_on_demand(self) -> None:
+    def merge_final_on_demand(self,log_callback: Callable = None) -> None:
         """
-        Merge all backup subfolders recursively.
-        For each unique relative file path across all backups,
+        Merge all backup subfolders and existing FINAL folder recursively.
+        For each unique relative file path across all backups and FINAL,
         keep the most recent version only, and copy it into the FINAL folder,
-        preserving the directory structure under FINAL.
-        Updates the FINAL folder JSON log with human-readable timestamps and md5.
+        preserving directory structure.
         """
         try:
-            latest_files = {}  # Dict[str, Tuple[float, str]] mapping relative path -> (mtime, full_path)
+            latest_files = {}  # relative_path -> (mtime, full_path)
+
+            # Load current FINAL snapshot with mtimes
+            if os.path.exists(self.final_folder):
+                for root, _, files in os.walk(self.final_folder):
+                    for f in files:
+                        path = os.path.join(root, f)
+                        rel_path = os.path.relpath(path, self.final_folder)
+                        mtime = os.path.getmtime(path)
+                        if rel_path not in latest_files or mtime > latest_files[rel_path][0]:
+                            latest_files[rel_path] = (mtime, path)
 
             backup_root = self.backup_folder
             backup_subfolders = [
@@ -267,40 +341,46 @@ class BackupManager:
                 if d != "FINAL" and os.path.isdir(os.path.join(backup_root, d))
             ]
 
-            # Walk all backups; collect latest mtime file for each relative path
+            # Merge backups snapshots similarly
             for backup_subfolder in backup_subfolders:
                 base_path = os.path.join(backup_root, backup_subfolder)
                 for root, _, files in os.walk(base_path):
                     for f in files:
-                        full_path = os.path.join(root, f)
-                        rel_path = os.path.relpath(full_path, base_path)
-                        mtime = os.path.getmtime(full_path)
+                        src_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(src_path, base_path)
+                        mtime = os.path.getmtime(src_path)
                         if rel_path not in latest_files or mtime > latest_files[rel_path][0]:
-                            latest_files[rel_path] = (mtime, full_path)
+                            latest_files[rel_path] = (mtime, src_path)
 
             os.makedirs(self.final_folder, exist_ok=True)
-            log_data = {}
+            log_data = self._load_final_log()
 
-            # Copy latest file versions into FINAL folder, preserving subfolders
+            # For each file, copy latest version to FINAL and update log
             for rel_path, (mtime, src_path) in latest_files.items():
                 dest_path = os.path.join(self.final_folder, rel_path)
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                shutil.copy2(src_path, dest_path)
+
+                if src_path != dest_path:
+                    shutil.copy2(src_path, dest_path)
 
                 human_mtime = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
                 md5_hash = md5_for_file(dest_path)
-
                 log_data[rel_path] = {
                     "timestamp": human_mtime,
                     "md5": md5_hash
                 }
 
             self._save_final_log(log_data)
-            print("Final folder merged and updated successfully.")
+            if callable(log_callback):
+                log_callback("Final folder merged and updated successfully.")
+            else:
+                print("Final folder merged and updated successfully.")
 
         except Exception as e:
-            print(f"Error during final merge: {e}")
-        
+            if callable(log_callback):
+                log_callback(f"Error during final merge: {e}")
+            else:
+                print(f"Error during final merge: {e}")
     
         
 class FolderWatcher:
@@ -327,7 +407,6 @@ class FolderWatcher:
         _perform_periodic_scan(): Scan watch folder and back up needed files.
         _check_and_backup_file(fpath): Check a single file for new or modified content and back up.
         _matches(filename): Check if filename matches any of the configured patterns.
-        _get_latest_backup_dir(): Determine the most recent backup directory to compare against.
         _log(message): Emit log messages using callback or standard output.
     """
     
@@ -361,42 +440,6 @@ class FolderWatcher:
     def _matches(self, filename: str) -> bool:
         return self.pattern_matcher.matches(filename)
 
-    def _get_latest_backup_dir(self) -> Optional[str]:
-        """
-        Returns the path to the latest backup directory.
-        If use_final_as_initial is True, considers FINAL folder as well.
-        """
-        try:
-            backup_dirs = []
-            base_folder = self.backup_manager.backup_folder
-
-            # List all backup subdirectories except FINAL
-            dirs = [d for d in os.listdir(base_folder) if os.path.isdir(os.path.join(base_folder, d))]
-            
-            # Build a list of (dir_path, modification_time) tuples excluding FINAL
-            for d in dirs:
-                if d == "FINAL":
-                    continue
-                dir_path = os.path.join(base_folder, d)
-                mod_time = os.path.getmtime(dir_path)
-                backup_dirs.append((dir_path, mod_time))
-
-            # If FINAL should be considered, add it with its mod time
-            if self.use_final_as_initial and "FINAL" in dirs:
-                final_path = os.path.join(base_folder, "FINAL")
-                final_mod_time = os.path.getmtime(final_path)
-                backup_dirs.append((final_path, final_mod_time))
-
-            if not backup_dirs:
-                return None
-
-            # Sort by modification time ascending, latest last
-            backup_dirs.sort(key=lambda x: x[1])
-            latest_dir = backup_dirs[-1][0]
-            return latest_dir
-
-        except Exception:
-            return None
 
     def _initialize_backup_state(self) -> None:
         """
@@ -410,16 +453,21 @@ class FolderWatcher:
         """
         base_snapshot = {}
 
+        success = False
         if self.use_final_as_initial:
             self._log("Initial synchronization: using FINAL folder as base.")
-            base_snapshot = self.backup_manager.get_final_snapshot()
-        else:
-            latest_backup_dir = self._get_latest_backup_dir()
+            base_snapshot, success = self.backup_manager.get_final_snapshot()
+            
+        if not success:
+            latest_backup_dir = self.backup_manager.get_latest_backup_dir()
             if latest_backup_dir is None:
                 self._log("Initial synchronization: no previous backup found.")
             else:
                 self._log(f"Initial synchronization: latest backup directory is {latest_backup_dir}")
-                base_snapshot = self.backup_manager.get_backup_snapshot(latest_backup_dir)
+                base_snapshot, success = self.backup_manager.get_backup_snapshot(latest_backup_dir)
+                
+        if not success:
+            self._log("Unable to initialize synchronizations state. Starting with a clean sync state.")
 
         current_files = {}
         # Compute MD5 hashes for matched files in the watch directory
