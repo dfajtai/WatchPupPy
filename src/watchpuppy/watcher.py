@@ -115,49 +115,67 @@ class BackupManager:
     def _prune_old_backups(self) -> None:
         """
         Delete the oldest backup folders if the number of backups exceeds max_versions.
-        Before deletion, preserve files from the backup in the FINAL folder to avoid data loss.
-        The FINAL folder is excluded from pruning to prevent accidental deletion.
+        Before deletion, preserve only those files from the backup that are not present
+        in any other backup folder, copying them to FINAL folder with logging.
+        FINAL folder is excluded from pruning.
         """
         if self.max_versions is None:
             return
         try:
-            # List backup folders excluding the FINAL folder
             backups = sorted(d for d in os.listdir(self.backup_folder) if d != "FINAL")
             while len(backups) > self.max_versions:
                 oldest = backups.pop(0)
                 oldest_path = os.path.join(self.backup_folder, oldest)
 
-                # Preserve files from the oldest backup before deletion
-                self._preserve_files_in_final(oldest_path)
+                # Find files in oldest backup
+                files_in_oldest = []
+                for fname in os.listdir(oldest_path):
+                    if os.path.isfile(os.path.join(oldest_path, fname)):
+                        files_in_oldest.append(fname)
+
+                # Determine which files are unique to this backup (not in others)
+                other_backups = [d for d in os.listdir(self.backup_folder) if d != "FINAL" and d != oldest]
+                unique_files = []
+                for fname in files_in_oldest:
+                    found_elsewhere = False
+                    for other in other_backups:
+                        other_path = os.path.join(self.backup_folder, other, fname)
+                        if os.path.exists(other_path):
+                            found_elsewhere = True
+                            break
+                    if not found_elsewhere:
+                        unique_files.append(fname)
+
+                # Preserve only unique files to FINAL
+                full_paths_to_preserve = [os.path.join(oldest_path, f) for f in unique_files]
+                if full_paths_to_preserve:
+                    self._preserve_files_in_final(full_paths_to_preserve)
 
                 # Remove the oldest backup folder
                 shutil.rmtree(oldest_path)
         except Exception as e:
             print(f"Backup pruning failed: {e}")
 
-    def _preserve_files_in_final(self, backup_path: str) -> None:
+
+    def _preserve_files_in_final(self, filepaths: List[str]) -> None:
         """
-        Copy files from backup_path to FINAL folder and log files with timestamp and md5.
+        Copy individual files from filepaths list into FINAL folder, flat structure,
+        and log each with timestamp and md5 in the JSON log.
         """
         try:
-            folder_name = os.path.basename(backup_path)
-            final_subfolder = os.path.join(self.final_folder, folder_name)
-            os.makedirs(final_subfolder, exist_ok=True)
-
             log_data = self._load_final_log()
 
-            for fname in os.listdir(backup_path):
-                src_file = os.path.join(backup_path, fname)
-                dest_file = os.path.join(final_subfolder, fname)
+            for src_file in filepaths:
+                fname = os.path.basename(src_file)
+                dest_file = os.path.join(self.final_folder, fname)
 
                 if not os.path.exists(dest_file):
                     shutil.copy2(src_file, dest_file)
                     mtime = os.path.getmtime(src_file)
                     md5_hash = md5_for_file(src_file)
 
-                    # Log the file with its timestamp and md5
-                    relative_path = os.path.relpath(dest_file, self.final_folder)
-                    log_data[relative_path] = {
+                    # Log the file flat by its name
+                    log_data[fname] = {
                         "timestamp": datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
                         "md5": md5_hash
                     }
@@ -165,6 +183,7 @@ class BackupManager:
             self._save_final_log(log_data)
         except Exception as e:
             print(f"Error preserving files to FINAL folder: {e}")
+
 
     def _load_final_log(self) -> dict:
         """
