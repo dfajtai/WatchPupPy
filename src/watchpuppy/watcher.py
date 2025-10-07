@@ -38,7 +38,7 @@ from threading import Lock
 from typing import Optional, List, Callable, Tuple
 
 from .pattern_matcher import PatternMatcher
-from .utils import current_time_str, md5_for_file
+from .utils import current_time_str, md5_for_file, is_file_locked
 
 
 class BackupManager:
@@ -574,7 +574,17 @@ class FolderWatcher:
         """
         try:
             mtime = os.path.getmtime(fpath)
-        except OSError:
+            
+            if is_file_locked(fpath):
+                self._log(f"Skipping locked file: {fpath}")
+                return
+            
+        except OSError as err:
+            self._log(f"OSError during accessing file '{fpath}': {err}")
+            return
+        
+        except Exception as err:
+            self._log(f"Error during accessing file '{fpath}': {err}")
             return
 
         last_mtime = self._last_mtimes.get(fpath)
