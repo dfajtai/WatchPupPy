@@ -572,7 +572,7 @@ class FolderWatcher:
         # Handle modifications for known files
         if mtime > last_mtime:
             md5_current = md5_for_file(fpath)
-            latest_backup_dir = self._get_latest_backup_dir()
+            latest_backup_dir = self.backup_manager.get_latest_backup_dir()
             md5_backup = None
             if latest_backup_dir:
                 backup_file_path = os.path.join(latest_backup_dir, os.path.basename(fpath))
